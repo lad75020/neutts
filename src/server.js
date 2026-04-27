@@ -19,6 +19,29 @@ const fastify = Fastify({
 
 await fastify.register(sensible);
 
+const CORS_HEADERS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, GET, DELETE, OPTIONS",
+  "access-control-allow-headers": "Content-Type, Mcp-Session-Id, MCP-Protocol-Version, Authorization",
+  "access-control-expose-headers": "Mcp-Session-Id",
+  "access-control-max-age": "86400",
+};
+
+fastify.addHook("onSend", async (req, reply, payload) => {
+  for (const [k, v] of Object.entries(CORS_HEADERS)) reply.header(k, v);
+  return payload;
+});
+
+fastify.route({
+  method: "OPTIONS",
+  url: "/*",
+  handler: (req, reply) => {
+    for (const [k, v] of Object.entries(CORS_HEADERS)) reply.header(k, v);
+    reply.code(204).send();
+  },
+});
+
+
 const transports = new Map();
 
 async function createSession(log) {
@@ -70,6 +93,7 @@ async function handleMcp(req, reply) {
   }
 
   reply.hijack();
+  for (const [k, v] of Object.entries(CORS_HEADERS)) reply.raw.setHeader(k, v);
   try {
     await transport.handleRequest(req.raw, reply.raw, req.body);
   } catch (err) {
