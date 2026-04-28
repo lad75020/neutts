@@ -1,0 +1,358 @@
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Voice Cloning Studio</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1f242d;
+    --border: #2a313d;
+    --text: #e6e8ec;
+    --muted: #8a93a3;
+    --accent: #7c8cff;
+    --accent-2: #5867ff;
+    --danger: #ff5f6d;
+    --ok: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 820px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin-bottom: 28px; font-size: 14px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px; margin-bottom: 18px; }
+  section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button { background: var(--accent); color: white; border: 0; border-radius: 8px;
+    padding: 10px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: background .15s; }
+  button:hover:not(:disabled) { background: var(--accent-2); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.secondary { background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); }
+  button.danger { background: var(--danger); }
+  textarea { width: 100%; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    font: inherit; resize: vertical; min-height: 80px; }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  audio { width: 100%; margin-top: 10px; }
+  .status { font-size: 13px; color: var(--muted); }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--danger); }
+  .recording-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--danger); margin-right: 8px; vertical-align: middle;
+    animation: pulse 1.2s infinite ease-in-out; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+  .timer { font-variant-numeric: tabular-nums; color: var(--muted); margin-left: 6px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  details { margin-top: 12px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  pre { background: #0a0c10; border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; font-size: 12px; overflow: auto; max-height: 200px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Voice Cloning Studio</h1>
+  <p class="sub">Record a sample, transcribe it with Whisper, then synthesize new speech in your voice with NeuTTS.</p>
+
+  <section>
+    <h2>1 · Record reference voice</h2>
+    <div class="row">
+      <button id="recBtn">Start recording</button>
+      <button id="stopBtn" class="danger" disabled="">Stop</button>
+      <span id="recStatus" class="status ok">Recorded 105.9 KB</span>
+      <span id="timer" class="timer">6.7s</span>
+    </div>
+    <audio id="recPlayback" controls="" src="blob:null/4e16e880-33f8-4002-bd59-57b357eed704"></audio>
+  </section>
+
+  <section>
+    <h2>2 · Transcribe</h2>
+    <div class="row">
+      <button id="transcribeBtn">Transcribe with Whisper</button>
+      <span id="transcribeStatus" class="status ok">Done</span>
+    </div>
+    <label style="margin-top:14px">Reference transcript (edit if needed)</label>
+    <textarea id="referenceText" placeholder="Transcript of your recording will appear here…"></textarea>
+  </section>
+
+  <section>
+    <h2>3 · Text to synthesize</h2>
+    <label>What should the cloned voice say?</label>
+    <textarea id="targetText" placeholder="Type the sentence you want spoken in your cloned voice…"></textarea>
+    <div class="row" style="margin-top:14px">
+      <button id="synthBtn">Synthesize speech</button>
+      <span id="synthStatus" class="status ok">Done · 307.1 KB</span>
+    </div>
+    <audio id="synthPlayback" controls="" src="blob:null/d4fd7737-cb8d-45c3-86d5-b864c9352067"></audio>
+  </section>
+
+  <details>
+    <summary>Debug log</summary>
+    <pre id="log">
+</pre>
+  </details>
+</main>
+
+<script>
+const WHISPER_URL = "https://whisper.dubertrand.fr/mcp";
+const NEUTTS_URL  = "https://mac-studio.tail4d2ab4.ts.net:17993/mcp";
+
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+function log(...args) {
+  console.log(...args);
+  logEl.textContent += args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ") + "\n";
+}
+function setStatus(el, msg, cls = "") { el.textContent = msg; el.className = "status " + cls; }
+
+// ---------- MCP client (Streamable HTTP) ----------
+class McpClient {
+  constructor(url) {
+    this.url = url;
+    this.sessionId = null;
+    this.nextId = 1;
+    this.initialized = false;
+  }
+
+  async _post(body, { isNotification = false } = {}) {
+    const headers = {
+      "Content-Type": "application/json",
+      "Accept": "application/json, text/event-stream",
+      "MCP-Protocol-Version": "2025-06-18",
+    };
+    if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
+
+    const res = await fetch(this.url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    const sid = res.headers.get("Mcp-Session-Id");
+    if (sid) this.sessionId = sid;
+
+    if (isNotification) {
+      if (!res.ok && res.status !== 202) {
+        throw new Error(`MCP notification failed: ${res.status} ${await res.text()}`);
+      }
+      return null;
+    }
+
+    if (!res.ok) {
+      throw new Error(`MCP HTTP ${res.status}: ${await res.text()}`);
+    }
+
+    const ctype = res.headers.get("Content-Type") || "";
+    if (ctype.includes("text/event-stream")) {
+      return await this._readSSEResponse(res, body.id);
+    }
+    if (ctype.includes("application/json")) {
+      return await res.json();
+    }
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { return text; }
+  }
+
+  async _readSSEResponse(res, expectedId) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split(/\n\n/);
+      buffer = events.pop();
+      for (const ev of events) {
+        const dataLines = ev.split("\n").filter(l => l.startsWith("data:"));
+        if (!dataLines.length) continue;
+        const dataStr = dataLines.map(l => l.slice(5).trimStart()).join("\n");
+        try {
+          const msg = JSON.parse(dataStr);
+          if (msg && (msg.id === expectedId || (msg.result || msg.error))) {
+            try { reader.cancel(); } catch {}
+            return msg;
+          }
+        } catch (e) { /* ignore non-json events */ }
+      }
+    }
+    throw new Error("MCP SSE stream ended without a response");
+  }
+
+  async initialize() {
+    const id = this.nextId++;
+    const resp = await this._post({
+      jsonrpc: "2.0", id,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "voice-clone-web", version: "0.1.0" },
+      },
+    });
+    if (resp.error) throw new Error("MCP initialize: " + JSON.stringify(resp.error));
+    await this._post({ jsonrpc: "2.0", method: "notifications/initialized" }, { isNotification: true });
+    this.initialized = true;
+    return resp.result;
+  }
+
+  async callTool(name, args) {
+    if (!this.initialized) await this.initialize();
+    const id = this.nextId++;
+    const resp = await this._post({
+      jsonrpc: "2.0", id,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+    if (resp.error) throw new Error(`tool ${name}: ${JSON.stringify(resp.error)}`);
+    return resp.result;
+  }
+}
+
+// ---------- Recording ----------
+let mediaRecorder = null;
+let chunks = [];
+let recordedBlob = null;
+let recordedBase64 = null;
+let recordedMime = "audio/webm";
+let timerInterval = null;
+let startedAt = 0;
+
+$("recBtn").onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : (MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "");
+    mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    recordedMime = mediaRecorder.mimeType || "audio/webm";
+    chunks = [];
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      clearInterval(timerInterval);
+      recordedBlob = new Blob(chunks, { type: recordedMime });
+      const url = URL.createObjectURL(recordedBlob);
+      const a = $("recPlayback"); a.src = url; a.hidden = false;
+      recordedBase64 = await blobToBase64(recordedBlob);
+      setStatus($("recStatus"), `Recorded ${(recordedBlob.size / 1024).toFixed(1)} KB`, "ok");
+      $("transcribeBtn").disabled = false;
+      $("recBtn").disabled = false;
+      $("stopBtn").disabled = true;
+    };
+    mediaRecorder.start();
+    startedAt = Date.now();
+    timerInterval = setInterval(() => {
+      const s = ((Date.now() - startedAt) / 1000).toFixed(1);
+      $("timer").textContent = `${s}s`;
+    }, 100);
+    $("recStatus").innerHTML = `<span class="recording-dot"></span>Recording…`;
+    $("recBtn").disabled = true;
+    $("stopBtn").disabled = false;
+  } catch (err) {
+    setStatus($("recStatus"), "Microphone error: " + err.message, "err");
+  }
+};
+
+$("stopBtn").onclick = () => mediaRecorder?.stop();
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onloadend = () => resolve(r.result.split(",")[1]);
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
+}
+
+// ---------- Transcription ----------
+$("transcribeBtn").onclick = async () => {
+  if (!recordedBase64) return;
+  setStatus($("transcribeStatus"), "Connecting to Whisper…");
+  $("transcribeBtn").disabled = true;
+  try {
+    const client = new McpClient(WHISPER_URL);
+    setStatus($("transcribeStatus"), "Transcribing…");
+    const result = await client.callTool("transcribe", {
+      type: "transcribe",
+      audio: `data:${recordedMime};base64,${recordedBase64}`,
+      language: "auto",
+    });
+    log("whisper result:", result);
+    const text = extractText(result);
+    $("referenceText").value = text;
+    setStatus($("transcribeStatus"), "Done", "ok");
+    refreshSynthBtn();
+  } catch (err) {
+    setStatus($("transcribeStatus"), "Error: " + err.message, "err");
+    log("whisper error:", err.message);
+  } finally {
+    $("transcribeBtn").disabled = false;
+  }
+};
+
+function extractText(result) {
+  if (!result) return "";
+  if (result.structuredContent?.text) return result.structuredContent.text;
+  if (Array.isArray(result.content)) {
+    const parts = result.content.filter(c => c.type === "text").map(c => c.text);
+    if (parts.length) {
+      const joined = parts.join("\n").trim();
+      try {
+        const obj = JSON.parse(joined);
+        if (typeof obj === "string") return obj;
+        if (obj && typeof obj.text === "string") return obj.text;
+        if (obj && typeof obj.transcript === "string") return obj.transcript;
+      } catch {}
+      return joined;
+    }
+  }
+  return JSON.stringify(result);
+}
+
+// ---------- Synthesis ----------
+$("referenceText").addEventListener("input", refreshSynthBtn);
+$("targetText").addEventListener("input", refreshSynthBtn);
+function refreshSynthBtn() {
+  $("synthBtn").disabled = !(recordedBase64 && $("referenceText").value.trim() && $("targetText").value.trim());
+}
+
+$("synthBtn").onclick = async () => {
+  setStatus($("synthStatus"), "Connecting to NeuTTS…");
+  $("synthBtn").disabled = true;
+  try {
+    const client = new McpClient(NEUTTS_URL);
+    setStatus($("synthStatus"), "Synthesizing (this can take a while)…");
+    const result = await client.callTool("synthesize_speech", {
+      text: $("targetText").value.trim(),
+      reference_text: $("referenceText").value.trim(),
+      reference_audio_base64: recordedBase64,
+    });
+    log("neutts result keys:", Object.keys(result || {}));
+    const audio = (result.content || []).find(c => c.type === "audio");
+    if (!audio) throw new Error("No audio returned");
+    const bin = atob(audio.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: audio.mimeType || "audio/mpeg" });
+    const url = URL.createObjectURL(blob);
+    const a = $("synthPlayback"); a.src = url; a.hidden = false; a.play().catch(() => {});
+    setStatus($("synthStatus"), `Done · ${(bytes.length / 1024).toFixed(1)} KB`, "ok");
+  } catch (err) {
+    setStatus($("synthStatus"), "Error: " + err.message, "err");
+    log("neutts error:", err.message);
+  } finally {
+    refreshSynthBtn();
+  }
+};
+</script>
+
+
+</body></html>

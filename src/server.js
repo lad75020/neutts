@@ -1,16 +1,21 @@
 import { randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import Fastify from "fastify";
 import sensible from "@fastify/sensible";
+import fastifyStatic from "@fastify/static";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import { buildMcpServer } from "./mcp.js";
 
-const PORT = Number(process.env.PORT ?? 3000);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PORT = Number(process.env.PORT ?? 17993);
 const HOST = process.env.HOST ?? "0.0.0.0";
 const MCP_PATH = process.env.MCP_PATH ?? "/mcp";
 const BODY_LIMIT_BYTES = Number(process.env.BODY_LIMIT_BYTES ?? 64 * 1024 * 1024);
+const PUBLIC_DIR = join(__dirname, "..", "public");
 
 const fastify = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? "info" },
@@ -18,6 +23,10 @@ const fastify = Fastify({
 });
 
 await fastify.register(sensible);
+await fastify.register(fastifyStatic, {
+  root: PUBLIC_DIR,
+  prefix: "/",
+});
 
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",

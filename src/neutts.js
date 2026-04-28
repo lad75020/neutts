@@ -8,7 +8,7 @@ import { toReferenceWav, wavToMp3, withTempDir } from "./audio.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
 const RUNNER = join(PROJECT_ROOT, "python", "tts_runner.py");
-const PYTHON = process.env.PYTHON_BIN ?? "/home/laurent/miniconda3/envs/neutts/bin/python3";
+const PYTHON = process.env.PYTHON_BIN ?? "/Volumes/WDBlack4TB/opt/miniconda3/envs/neutts/bin/python3";
 
 function runPython(spec, log) {
   return new Promise((resolve, reject) => {
